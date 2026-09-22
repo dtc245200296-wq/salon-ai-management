@@ -1,0 +1,1181 @@
+============================================================
+SALON_AI PROJECT - CODE BUNDLE
+============================================================
+
+File layout:
+- app.py
+- database.py
+- ai_service.py
+- requirements.txt
+- .env.example
+- README.md
+- templates/*
+- static/css/style.css
+- static/js/main.js
+- data/services/*.txt
+- tests/test_smoke.py
+- run.bat
+
+Each section below is copied from its corresponding file.
+
+
+============================================================
+FILE: app.py
+============================================================
+
+import os
+from datetime import datetime, date
+from functools import wraps
+from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from dotenv import load_dotenv
+
+load_dotenv()
+
+import database
+import ai_service
+
+app = Flask(__name__)
+app.config.update(
+    SECRET_KEY=os.getenv("SECRET_KEY", "dev-secret-change-me"),
+    JSON_AS_ASCII=False,
+)
+
+database.init_db()
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def roles_required(*roles):
+    def decorator(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            if "user_id" not in session:
+                return redirect(url_for("login", next=request.path))
+            if session.get("role") not in roles:
+                flash("Bạn không có quyền thực hiện thao tác này.", "danger")
+                return redirect(url_for("dashboard"))
+            return view(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def is_admin():
+    return session.get("role") == "admin"
+
+
+def is_receptionist():
+    return session.get("role") == "receptionist"
+
+
+def is_barber():
+    return session.get("role") == "barber"
+
+
+@app.context_processor
+def inject_globals():
+    return {
+        "current_user": database.get_user(session["user_id"]) if session.get("user_id") else None,
+        "is_admin": is_admin(),
+        "is_receptionist": is_receptionist(),
+        "is_barber": is_barber(),
+        "now": datetime.now(),
+    }
+
+
+@app.route("/")
+@login_required
+def home():
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("user_id"):
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = database.authenticate_user(username, password)
+        if user:
+            session.clear()
+            session.update(
+                user_id=user["id"],
+                username=user["username"],
+                full_name=user["full_name"],
+                role=user["role"],
+            )
+            return redirect(url_for("dashboard"))
+        return render_template("login.html", error="Tên đăng nhập hoặc mật khẩu không đúng.")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    return render_template(
+        "dashboard.html",
+        stats=database.dashboard_stats(),
+        today_appointments=database.list_appointments(date.today().isoformat()),
+        popular=database.popular_services(limit=5),
+    )
+
+
+@app.route("/customers", methods=["GET", "POST"])
+@login_required
+def customers():
+    if request.method == "POST":
+        payload = {
+            "full_name": request.form.get("full_name", "").strip(),
+            "phone": request.form.get("phone", "").strip(),
+            "email": request.form.get("email", "").strip(),
+            "gender": request.form.get("gender", "").strip(),
+            "birthday": request.form.get("birthday", "").strip(),
+            "note": request.form.get("note", "").strip(),
+        }
+        if not payload["full_name"] or not payload["phone"]:
+            flash("Họ tên và số điện thoại là bắt buộc.", "danger")
+        else:
+            database.create_customer(payload)
+            flash("Đã thêm khách hàng.", "success")
+        return redirect(url_for("customers"))
+
+    q = request.args.get("q", "").strip()
+    rows = database.list_customers(q)
+    return render_template("customers.html", customers=rows, query=q)
+
+
+@app.route("/customers/<int:customer_id>")
+@login_required
+def customer_detail(customer_id):
+    customer = database.get_customer(customer_id)
+    if not customer:
+        return "Không tìm thấy khách hàng", 404
+    return render_template(
+        "customer_detail.html",
+        customer=customer,
+        history=database.customer_history(customer_id),
+        appointments=database.list_appointments(customer_id=customer_id),
+    )
+
+
+@app.route("/customers/<int:customer_id>/edit", methods=["POST"])
+@login_required
+def edit_customer(customer_id):
+    database.update_customer(
+        customer_id,
+        request.form.get("full_name", "").strip(),
+        request.form.get("phone", "").strip(),
+        request.form.get("email", "").strip(),
+        request.form.get("gender", "").strip(),
+        request.form.get("birthday", "").strip(),
+        request.form.get("note", "").strip(),
+    )
+    flash("Đã cập nhật khách hàng.", "success")
+    return redirect(url_for("customer_detail", customer_id=customer_id))
+
+
+@app.route("/barbers")
+@roles_required("admin", "receptionist")
+def barbers():
+    return render_template("barbers.html", barbers=database.list_barbers())
+
+
+@app.route("/barbers", methods=["POST"])
+@roles_required("admin")
+def create_barber():
+    database.create_barber(
+        request.form.get("full_name", "").strip(),
+        request.form.get("phone", "").strip(),
+        request.form.get("specialty", "").strip(),
+        request.form.get("experience", "").strip(),
+        request.form.get("status", "active"),
+    )
+    flash("Đã thêm thợ.", "success")
+    return redirect(url_for("barbers"))
+
+
+@app.route("/services", methods=["GET", "POST"])
+@login_required
+def services():
+    if request.method == "POST":
+        database.create_service(
+            request.form.get("name", "").strip(),
+            request.form.get("category", "").strip(),
+            request.form.get("description", "").strip(),
+            int(request.form.get("duration_minutes", 30)),
+            float(request.form.get("price", 0)),
+        )
+        flash("Đã thêm dịch vụ.", "success")
+        return redirect(url_for("services"))
+    return render_template("services.html", services=database.list_services())
+
+
+@app.route("/appointments")
+@login_required
+def appointments():
+    date_filter = request.args.get("date", "").strip()
+    status = request.args.get("status", "").strip()
+    return render_template(
+        "appointments.html",
+        appointments=database.list_appointments(date_filter=date_filter or None, status=status or None),
+        customers=database.list_customers(),
+        barbers=database.list_barbers(),
+        services=database.list_services(),
+        selected_date=date_filter,
+        selected_status=status,
+    )
+
+
+@app.route("/appointments/create", methods=["POST"])
+@roles_required("admin", "receptionist")
+def create_appointment():
+    customer_id = int(request.form["customer_id"])
+    barber_id = int(request.form["barber_id"])
+    service_ids = [int(x) for x in request.form.getlist("service_ids")]
+    if not service_ids:
+        flash("Hãy chọn ít nhất một dịch vụ.", "danger")
+        return redirect(url_for("appointments"))
+    appt_id = database.create_appointment(
+        customer_id,
+        barber_id,
+        request.form["appointment_date"],
+        request.form["start_time"],
+        request.form.get("end_time", ""),
+        request.form.get("note", "").strip(),
+        service_ids,
+    )
+    flash(f"Đã tạo lịch hẹn #{appt_id}.", "success")
+    return redirect(url_for("appointments"))
+
+
+@app.route("/appointments/<int:appointment_id>/status", methods=["POST"])
+@roles_required("admin", "receptionist", "barber")
+def update_appointment_status(appointment_id):
+    new_status = request.form.get("status", "").strip()
+    if new_status not in {"Pending", "Confirmed", "Completed", "Cancelled"}:
+        flash("Trạng thái không hợp lệ.", "danger")
+    else:
+        database.update_appointment_status(appointment_id, new_status)
+        flash("Đã cập nhật trạng thái lịch hẹn.", "success")
+    return redirect(url_for("appointments"))
+
+
+@app.route("/invoices")
+@roles_required("admin", "receptionist")
+def invoices():
+    return render_template("invoices.html", invoices=database.list_invoices())
+
+
+@app.route("/invoices/create", methods=["POST"])
+@roles_required("admin", "receptionist")
+def create_invoice():
+    appointment_id = int(request.form["appointment_id"])
+    database.create_invoice(
+        appointment_id,
+        request.form.get("discount", 0),
+        request.form.get("payment_method", "Cash"),
+    )
+    flash("Đã tạo hóa đơn.", "success")
+    return redirect(url_for("invoices"))
+
+
+@app.route("/history")
+@login_required
+def history():
+    q = request.args.get("q", "").strip()
+    return render_template("history.html", rows=database.search_history(q), query=q)
+
+
+@app.route("/ai/recommendation")
+@login_required
+def ai_recommendation_page():
+    return render_template(
+        "ai_recommendation.html",
+        customers=database.list_customers(),
+        services=database.list_services(),
+    )
+
+
+@app.route("/ai/message")
+@login_required
+def ai_message_page():
+    return render_template("ai_message.html", customers=database.list_customers())
+
+
+@app.route("/ai/summary")
+@login_required
+def ai_summary_page():
+    return render_template("ai_summary.html", customers=database.list_customers())
+
+
+@app.route("/chat")
+@login_required
+def chat_page():
+    return render_template("chat.html")
+
+
+@app.route("/api/ai/recommend", methods=["POST"])
+@login_required
+def api_ai_recommend():
+    data = request.get_json(silent=True) or {}
+    customer_id = int(data.get("customer_id"))
+    customer = database.get_customer(customer_id)
+    if not customer:
+        return jsonify({"error": "Không tìm thấy khách hàng."}), 404
+    history = database.customer_history(customer_id)
+    services = database.list_services(active_only=True)
+    return jsonify(ai_service.recommend_service(customer, history, services))
+
+
+@app.route("/api/ai/message", methods=["POST"])
+@login_required
+def api_ai_message():
+    data = request.get_json(silent=True) or {}
+    customer_id = int(data.get("customer_id"))
+    customer = database.get_customer(customer_id)
+    if not customer:
+        return jsonify({"error": "Không tìm thấy khách hàng."}), 404
+    history = database.customer_history(customer_id)
+    services = database.list_services(active_only=True)
+    return jsonify(ai_service.generate_message(customer, history, services))
+
+
+@app.route("/api/ai/summary", methods=["POST"])
+@login_required
+def api_ai_summary():
+    data = request.get_json(silent=True) or {}
+    customer_id = int(data.get("customer_id"))
+    customer = database.get_customer(customer_id)
+    if not customer:
+        return jsonify({"error": "Không tìm thấy khách hàng."}), 404
+    return jsonify(ai_service.summarize_customer(customer, database.customer_history(customer_id)))
+
+
+@app.route("/api/ai/chat", methods=["POST"])
+@login_required
+def api_ai_chat():
+    try:
+        data = request.get_json(silent=True) or {}
+        message = (data.get("message") or "").strip()
+        if not message:
+            return jsonify({"error": "Vui lòng nhập câu hỏi."}), 400
+        context = {
+            "role": session.get("role"),
+            "user_id": session.get("user_id"),
+            "services": database.list_services(active_only=True),
+        }
+        result = ai_service.chat_salon(message, context)
+        database.save_ai_chat(session["user_id"], message, result.get("reply", ""), result.get("mode", "ai"))
+        return jsonify(result)
+    except Exception as exc:
+        app.logger.exception("AI chat error")
+        return jsonify({"error": "Máy chủ AI gặp lỗi.", "detail": str(exc)}), 500
+
+
+@app.errorhandler(404)
+def not_found(_):
+    return render_template("error.html", code=404, message="Không tìm thấy trang."), 404
+
+
+@app.errorhandler(500)
+def server_error(error):
+    app.logger.exception("Unhandled server error: %s", error)
+    return render_template("error.html", code=500, message="Có lỗi xảy ra trên máy chủ."), 500
+
+
+if __name__ == "__main__":
+    app.run(
+        host="127.0.0.1",
+        port=5000,
+        debug=os.getenv("FLASK_DEBUG", "0") == "1",
+    )
+
+============================================================
+FILE: database.py
+============================================================
+
+from pathlib import Path
+from datetime import datetime
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
+
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "salon_system.db"
+
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def init_db():
+    conn = get_db_connection()
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'receptionist',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name TEXT NOT NULL,
+            phone TEXT UNIQUE NOT NULL,
+            email TEXT,
+            gender TEXT,
+            birthday TEXT,
+            note TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS barbers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name TEXT NOT NULL,
+            phone TEXT,
+            specialty TEXT,
+            experience TEXT,
+            status TEXT DEFAULT 'active',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT,
+            description TEXT,
+            duration_minutes INTEGER NOT NULL DEFAULT 30,
+            price REAL NOT NULL DEFAULT 0,
+            status TEXT DEFAULT 'active',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS appointments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            barber_id INTEGER NOT NULL,
+            appointment_date TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            status TEXT NOT NULL DEFAULT 'Pending',
+            note TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+            FOREIGN KEY(barber_id) REFERENCES barbers(id) ON DELETE RESTRICT
+        );
+        CREATE TABLE IF NOT EXISTS appointment_services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            appointment_id INTEGER NOT NULL,
+            service_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            price REAL NOT NULL DEFAULT 0,
+            FOREIGN KEY(appointment_id) REFERENCES appointments(id) ON DELETE CASCADE,
+            FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE RESTRICT
+        );
+        CREATE TABLE IF NOT EXISTS invoices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            appointment_id INTEGER UNIQUE NOT NULL,
+            customer_id INTEGER NOT NULL,
+            subtotal REAL NOT NULL DEFAULT 0,
+            discount REAL NOT NULL DEFAULT 0,
+            total REAL NOT NULL DEFAULT 0,
+            payment_method TEXT DEFAULT 'Cash',
+            payment_status TEXT DEFAULT 'Paid',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(appointment_id) REFERENCES appointments(id) ON DELETE CASCADE,
+            FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS invoice_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoice_id INTEGER NOT NULL,
+            service_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            unit_price REAL NOT NULL DEFAULT 0,
+            amount REAL NOT NULL DEFAULT 0,
+            FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
+            FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE RESTRICT
+        );
+        CREATE TABLE IF NOT EXISTS customer_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL,
+            appointment_id INTEGER,
+            service_id INTEGER,
+            hair_style TEXT,
+            hair_color TEXT,
+            customer_note TEXT,
+            barber_note TEXT,
+            result TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+            FOREIGN KEY(appointment_id) REFERENCES appointments(id) ON DELETE SET NULL,
+            FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS ai_chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            message TEXT NOT NULL,
+            response TEXT NOT NULL,
+            mode TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_appointments_date ON appointments(appointment_date);
+        CREATE INDEX IF NOT EXISTS idx_history_customer ON customer_history(customer_id);
+        """
+    )
+    seed_data(conn)
+    conn.commit()
+    conn.close()
+
+
+def seed_data(conn):
+    if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+        conn.execute("INSERT INTO users(username,password_hash,full_name,role) VALUES (?,?,?,?)", ("admin", generate_password_hash("123456"), "Quản trị viên", "admin"))
+        conn.execute("INSERT INTO users(username,password_hash,full_name,role) VALUES (?,?,?,?)", ("le_tan", generate_password_hash("123456"), "Lê Tân", "receptionist"))
+        conn.execute("INSERT INTO users(username,password_hash,full_name,role) VALUES (?,?,?,?)", ("tho01", generate_password_hash("123456"), "Nguyễn Minh Quân", "barber"))
+
+    if conn.execute("SELECT COUNT(*) FROM barbers").fetchone()[0] == 0:
+        conn.executemany(
+            "INSERT INTO barbers(full_name,phone,specialty,experience,status) VALUES (?,?,?,?,?)",
+            [
+                ("Nguyễn Minh Quân", "0901000001", "Cắt tạo kiểu", "6 năm", "active"),
+                ("Trần Duy Long", "0901000002", "Nhuộm", "5 năm", "active"),
+                ("Lê Hoàng Nam", "0901000003", "Uốn và phục hồi", "7 năm", "active"),
+            ],
+        )
+
+    if conn.execute("SELECT COUNT(*) FROM services").fetchone()[0] == 0:
+        conn.executemany(
+            "INSERT INTO services(name,category,description,duration_minutes,price) VALUES (?,?,?,?,?)",
+            [
+                ("Cắt tóc nam", "Haircut", "Cắt và tạo kiểu cơ bản", 45, 120000),
+                ("Cắt layer", "Haircut", "Cắt layer theo khuôn mặt", 60, 180000),
+                ("Nhuộm tóc", "Color", "Nhuộm theo màu khách chọn", 150, 650000),
+                ("Uốn tóc", "Styling", "Uốn tạo kiểu", 180, 850000),
+                ("Gội dưỡng tóc", "Care", "Gội và dưỡng tóc", 45, 150000),
+                ("Phục hồi tóc", "Treatment", "Phục hồi tóc hư tổn", 90, 450000),
+            ],
+        )
+
+    if conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 0:
+        conn.executemany(
+            "INSERT INTO customers(full_name,phone,email,note) VALUES (?,?,?,?)",
+            [
+                ("Nguyễn Văn An", "0912000001", "an@example.com", "Thích kiểu layer, màu nâu."),
+                ("Trần Thị Bình", "0912000002", "binh@example.com", "Ưa tóc ngắn và dễ chăm sóc."),
+                ("Lê Minh Châu", "0912000003", "chau@example.com", "Từng nhuộm tóc, tóc hơi khô."),
+            ],
+        )
+
+
+def authenticate_user(username, password):
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    conn.close()
+    return dict(row) if row and check_password_hash(row["password_hash"], password) else None
+
+
+def get_user(user_id):
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def dashboard_stats():
+    conn = get_db_connection()
+    today = datetime.now().date().isoformat()
+    stats = {
+        "customers": conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0],
+        "appointments_today": conn.execute("SELECT COUNT(*) FROM appointments WHERE appointment_date=?", (today,)).fetchone()[0],
+        "pending": conn.execute("SELECT COUNT(*) FROM appointments WHERE status='Pending'").fetchone()[0],
+        "revenue_month": conn.execute("SELECT COALESCE(SUM(total),0) FROM invoices WHERE substr(created_at,1,7)=?", (datetime.now().strftime('%Y-%m'),)).fetchone()[0],
+    }
+    conn.close()
+    return stats
+
+
+def create_customer(p):
+    conn = get_db_connection()
+    conn.execute("INSERT INTO customers(full_name,phone,email,gender,birthday,note) VALUES (?,?,?,?,?,?)", (p["full_name"],p["phone"],p.get("email"),p.get("gender"),p.get("birthday"),p.get("note")))
+    conn.commit(); conn.close()
+
+
+def list_customers(q=""):
+    conn = get_db_connection()
+    if q:
+        rows = conn.execute("SELECT * FROM customers WHERE full_name LIKE ? OR phone LIKE ? OR email LIKE ? ORDER BY id DESC", (f"%{q}%",f"%{q}%",f"%{q}%")).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM customers ORDER BY id DESC").fetchall()
+    conn.close(); return [dict(r) for r in rows]
+
+
+def get_customer(customer_id):
+    conn = get_db_connection(); row = conn.execute("SELECT * FROM customers WHERE id=?", (customer_id,)).fetchone(); conn.close(); return dict(row) if row else None
+
+
+def update_customer(customer_id, full_name, phone, email, gender, birthday, note):
+    conn = get_db_connection(); conn.execute("UPDATE customers SET full_name=?,phone=?,email=?,gender=?,birthday=?,note=? WHERE id=?", (full_name,phone,email,gender,birthday,note,customer_id)); conn.commit(); conn.close()
+
+
+def list_barbers():
+    conn = get_db_connection(); rows = conn.execute("SELECT * FROM barbers ORDER BY full_name").fetchall(); conn.close(); return [dict(r) for r in rows]
+
+
+def create_barber(full_name, phone, specialty, experience, status):
+    conn=get_db_connection(); conn.execute("INSERT INTO barbers(full_name,phone,specialty,experience,status) VALUES (?,?,?,?,?)",(full_name,phone,specialty,experience,status)); conn.commit(); conn.close()
+
+
+def list_services(active_only=False):
+    conn=get_db_connection()
+    sql="SELECT * FROM services"
+    params=[]
+    if active_only:
+        sql += " WHERE status='active'"
+    sql += " ORDER BY category,name"
+    rows=conn.execute(sql,params).fetchall(); conn.close(); return [dict(r) for r in rows]
+
+
+def create_service(name, category, description, duration_minutes, price):
+    conn=get_db_connection(); conn.execute("INSERT INTO services(name,category,description,duration_minutes,price) VALUES (?,?,?,?,?)",(name,category,description,duration_minutes,price)); conn.commit(); conn.close()
+
+
+def create_appointment(customer_id, barber_id, appointment_date, start_time, end_time, note, service_ids):
+    conn=get_db_connection()
+    overlap=conn.execute("SELECT COUNT(*) FROM appointments WHERE barber_id=? AND appointment_date=? AND status NOT IN ('Cancelled','Completed') AND ((start_time < ? AND COALESCE(end_time,start_time) > ?) OR (start_time >= ? AND start_time < COALESCE(?,start_time)))", (barber_id,appointment_date,end_time,start_time,start_time,end_time)).fetchone()[0]
+    if overlap:
+        conn.close(); raise ValueError("Thợ đã có lịch trùng trong khoảng thời gian này.")
+    cur=conn.execute("INSERT INTO appointments(customer_id,barber_id,appointment_date,start_time,end_time,status,note) VALUES (?,?,?,?,?,?,?)",(customer_id,barber_id,appointment_date,start_time,end_time,"Pending",note))
+    appointment_id=cur.lastrowid
+    for service_id in service_ids:
+        row=conn.execute("SELECT price FROM services WHERE id=?",(service_id,)).fetchone()
+        if not row: continue
+        conn.execute("INSERT INTO appointment_services(appointment_id,service_id,quantity,price) VALUES (?,?,?,?)",(appointment_id,service_id,1,row["price"]))
+    conn.commit(); conn.close(); return appointment_id
+
+
+def list_appointments(date_filter=None, status=None, customer_id=None):
+    conn=get_db_connection()
+    sql="""SELECT a.*, c.full_name customer_name, c.phone customer_phone, b.full_name barber_name,
+           COALESCE((SELECT SUM(aps.quantity*aps.price) FROM appointment_services aps WHERE aps.appointment_id=a.id),0) amount
+           FROM appointments a JOIN customers c ON c.id=a.customer_id JOIN barbers b ON b.id=a.barber_id WHERE 1=1"""
+    params=[]
+    if date_filter: sql += " AND a.appointment_date=?"; params.append(date_filter)
+    if status: sql += " AND a.status=?"; params.append(status)
+    if customer_id: sql += " AND a.customer_id=?"; params.append(customer_id)
+    sql += " ORDER BY a.appointment_date DESC,a.start_time DESC"
+    rows=conn.execute(sql,params).fetchall(); conn.close(); return [dict(r) for r in rows]
+
+
+def update_appointment_status(appointment_id, status):
+    conn=get_db_connection(); conn.execute("UPDATE appointments SET status=? WHERE id=?",(status,appointment_id))
+    if status == "Completed":
+        appt=conn.execute("SELECT * FROM appointments WHERE id=?",(appointment_id,)).fetchone()
+        services=conn.execute("SELECT service_id FROM appointment_services WHERE appointment_id=? LIMIT 1",(appointment_id,)).fetchone()
+        if appt and services:
+            conn.execute("INSERT INTO customer_history(customer_id,appointment_id,service_id,result) VALUES (?,?,?,?)",(appt["customer_id"],appointment_id,services["service_id"],"Hoàn thành dịch vụ"))
+    conn.commit(); conn.close()
+
+
+def create_invoice(appointment_id, discount, payment_method):
+    conn=get_db_connection(); appt=conn.execute("SELECT customer_id FROM appointments WHERE id=?",(appointment_id,)).fetchone()
+    if not appt: conn.close(); raise ValueError("Không tìm thấy lịch hẹn.")
+    items=conn.execute("SELECT * FROM appointment_services WHERE appointment_id=?",(appointment_id,)).fetchall()
+    subtotal=sum(float(x["price"])*int(x["quantity"]) for x in items)
+    discount=float(discount or 0); total=max(0, subtotal-discount)
+    cur=conn.execute("INSERT INTO invoices(appointment_id,customer_id,subtotal,discount,total,payment_method,payment_status) VALUES (?,?,?,?,?,?,?)",(appointment_id,appt["customer_id"],subtotal,discount,total,payment_method,"Paid"))
+    invoice_id=cur.lastrowid
+    for x in items: conn.execute("INSERT INTO invoice_items(invoice_id,service_id,quantity,unit_price,amount) VALUES (?,?,?,?,?)",(invoice_id,x["service_id"],x["quantity"],x["price"],x["price"]*x["quantity"]))
+    conn.commit(); conn.close()
+
+
+def list_invoices():
+    conn=get_db_connection(); rows=conn.execute("SELECT i.*, c.full_name customer_name FROM invoices i JOIN customers c ON c.id=i.customer_id ORDER BY i.id DESC").fetchall(); conn.close(); return [dict(r) for r in rows]
+
+
+def customer_history(customer_id):
+    conn=get_db_connection(); rows=conn.execute("""SELECT h.*, s.name service_name, a.appointment_date FROM customer_history h LEFT JOIN services s ON s.id=h.service_id LEFT JOIN appointments a ON a.id=h.appointment_id WHERE h.customer_id=? ORDER BY h.created_at DESC""",(customer_id,)).fetchall(); conn.close(); return [dict(r) for r in rows]
+
+
+def search_history(q=""):
+    conn=get_db_connection()
+    if q:
+        rows=conn.execute("""SELECT h.*, c.full_name customer_name, s.name service_name FROM customer_history h JOIN customers c ON c.id=h.customer_id LEFT JOIN services s ON s.id=h.service_id WHERE c.full_name LIKE ? OR s.name LIKE ? OR h.hair_style LIKE ? OR h.hair_color LIKE ? ORDER BY h.created_at DESC""",(f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%")).fetchall()
+    else:
+        rows=conn.execute("""SELECT h.*, c.full_name customer_name, s.name service_name FROM customer_history h JOIN customers c ON c.id=h.customer_id LEFT JOIN services s ON s.id=h.service_id ORDER BY h.created_at DESC""").fetchall()
+    conn.close(); return [dict(r) for r in rows]
+
+
+def popular_services(limit=5):
+    conn=get_db_connection(); rows=conn.execute("""SELECT s.name, COUNT(*) count FROM appointment_services aps JOIN services s ON s.id=aps.service_id GROUP BY s.id ORDER BY count DESC LIMIT ?""",(limit,)).fetchall(); conn.close(); return [dict(r) for r in rows]
+
+
+def save_ai_chat(user_id, message, response, mode):
+    conn=get_db_connection(); conn.execute("INSERT INTO ai_chat_history(user_id,message,response,mode) VALUES (?,?,?,?)",(user_id,message,response,mode)); conn.commit(); conn.close()
+
+============================================================
+FILE: ai_service.py
+============================================================
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+try:
+    from google import genai
+    from google.genai import types
+except Exception:
+    genai = None
+    types = None
+
+try:
+    from ddgs import DDGS
+except Exception:
+    DDGS = None
+
+BASE_DIR = Path(__file__).resolve().parent
+SERVICES_DIR = BASE_DIR / "data" / "services"
+
+
+def _client():
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key or genai is None:
+        return None
+    return genai.Client(api_key=api_key)
+
+
+def _service_text(services):
+    return "\n".join(
+        f"- {s['name']} | {s.get('category','')} | {s['duration_minutes']} phút | {s['price']:,.0f} VNĐ | {s.get('description','')}"
+        for s in services
+    )
+
+
+def _history_text(history):
+    return "\n".join(
+        f"- {h.get('appointment_date','')}: {h.get('service_name','')} | kiểu: {h.get('hair_style','')} | màu: {h.get('hair_color','')} | ghi chú: {h.get('customer_note','')} | kết quả: {h.get('result','')}"
+        for h in history
+    ) or "Chưa có lịch sử dịch vụ."
+
+
+def _parse_json(text, fallback):
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return fallback
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return fallback
+
+
+def _gemini_text(prompt, use_search=False):
+    client = _client()
+    model = os.getenv("GEMINI_WEB_MODEL" if use_search else "GEMINI_MODEL", "gemini-3.6-flash")
+    if client is None:
+        return None, "gemini_unavailable", []
+    try:
+        if use_search:
+            result = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())]
+                ),
+            )
+        else:
+            result = client.models.generate_content(model=model, contents=prompt)
+        text = getattr(result, "text", None) or ""
+        sources = []
+        grounding = getattr(result, "grounding_metadata", None)
+        if grounding:
+            chunks = getattr(grounding, "grounding_chunks", None) or []
+            for chunk in chunks:
+                web = getattr(chunk, "web", None)
+                if web:
+                    uri = getattr(web, "uri", None)
+                    title = getattr(web, "title", None)
+                    if uri:
+                        sources.append({"title": title or uri, "url": uri})
+        return text.strip(), "gemini", sources
+    except Exception as exc:
+        return None, f"gemini_error:{exc}", []
+
+
+def _web_fallback(query):
+    if DDGS is None:
+        return None, "ddgs_unavailable", []
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+        if not results:
+            return None, "no_web_results", []
+        lines = ["Kết quả tìm kiếm Internet:", ""]
+        sources = []
+        for i, item in enumerate(results, 1):
+            title = item.get("title") or item.get("href") or f"Nguồn {i}"
+            href = item.get("href") or item.get("url") or ""
+            body = item.get("body") or item.get("snippet") or ""
+            lines.append(f"{i}. {title}\n{body}\n{href}\n")
+            if href:
+                sources.append({"title": title, "url": href})
+        return "\n".join(lines).strip(), "web_fallback", sources
+    except Exception as exc:
+        return None, f"web_error:{exc}", []
+
+
+def _is_web_question(message):
+    keywords = [
+        "luật lao động", "pháp luật", "quy định mới", "quy định hiện hành",
+        "năm 2026", "hiện nay", "mới nhất", "theo luật", "internet", "trên mạng",
+    ]
+    m = message.lower()
+    return any(k in m for k in keywords)
+
+
+def recommend_service(customer, history, services):
+    prompt = f"""Bạn là trợ lý tư vấn salon tóc. Chỉ được đề xuất dịch vụ tồn tại trong danh sách.
+Không cam kết kết quả ngoài dữ liệu. Dựa vào nhu cầu và lịch sử để gợi ý.
+
+KHÁCH HÀNG:
+{customer['full_name']}; ghi chú: {customer.get('note','')}
+
+LỊCH SỬ:
+{_history_text(history)}
+
+DỊCH VỤ HIỆN CÓ:
+{_service_text(services)}
+
+Trả về JSON gồm recommended_services, reason, warning."""
+    text, mode, _ = _gemini_text(prompt, use_search=False)
+    fallback = {
+        "recommended_services": [s["name"] for s in services[:2]],
+        "reason": "Gợi ý dựa trên danh sách dịch vụ hiện tại và lịch sử khách hàng.",
+        "warning": "Nhân viên nên kiểm tra thực tế tóc và nhu cầu trước khi thực hiện.",
+        "mode": "rule_fallback",
+    }
+    result = _parse_json(text, fallback) if text else fallback
+    result["mode"] = mode
+    return result
+
+
+def generate_message(customer, history, services):
+    prompt = f"""Viết một tin nhắn chăm sóc khách hàng ngắn, lịch sự, tự nhiên cho salon tóc.
+Không hứa hẹn kết quả. Không tự tạo dịch vụ hoặc giá.
+Khách: {customer['full_name']}
+Ghi chú: {customer.get('note','')}
+Lịch sử:\n{_history_text(history)}
+Dịch vụ hiện có:\n{_service_text(services)}
+Chỉ trả về nội dung tin nhắn."""
+    text, mode, _ = _gemini_text(prompt)
+    reply = text or f"Chào {customer['full_name']}, salon rất vui được phục vụ bạn. Nếu bạn muốn đặt lịch hoặc cần tư vấn kiểu tóc phù hợp, salon sẵn sàng hỗ trợ."
+    return {"reply": reply, "mode": mode}
+
+
+def summarize_customer(customer, history):
+    prompt = f"""Tóm tắt lịch sử khách hàng salon trong 3-5 câu, trung tính, không suy đoán.
+Khách: {customer['full_name']}
+Ghi chú: {customer.get('note','')}
+Lịch sử:\n{_history_text(history)}"""
+    text, mode, _ = _gemini_text(prompt)
+    return {"summary": text or "Khách hàng chưa có đủ lịch sử để tóm tắt.", "mode": mode}
+
+
+def chat_salon(message, context):
+    services = context.get("services", [])
+    if _is_web_question(message):
+        prompt = f"""Trả lời câu hỏi dưới đây bằng tiếng Việt.
+Nếu câu hỏi cần thông tin pháp luật hoặc thông tin cập nhật, hãy tìm nguồn trên Internet và ưu tiên nguồn chính thức.
+Câu hỏi: {message}"""
+        text, mode, sources = _gemini_text(prompt, use_search=True)
+        if text:
+            return {"reply": text, "mode": mode, "sources": sources, "citations": sources}
+        fallback, fallback_mode, fallback_sources = _web_fallback(message)
+        if fallback:
+            return {"reply": fallback, "mode": fallback_mode, "sources": fallback_sources, "citations": fallback_sources}
+        return {"reply": "Chưa thể tra cứu thông tin pháp luật trên Internet lúc này. Vui lòng kiểm tra kết nối hoặc thử lại sau.", "mode": "web_unavailable", "sources": [], "citations": []}
+
+    prompt = f"""Bạn là trợ lý salon tóc.
+Chỉ sử dụng thông tin dịch vụ được cung cấp dưới đây. Không bịa tên dịch vụ, giá hoặc thời lượng.
+Nếu không đủ thông tin, hãy nói rõ.
+Danh sách dịch vụ:\n{_service_text(services)}
+Câu hỏi khách:\n{message}"""
+    text, mode, sources = _gemini_text(prompt, use_search=False)
+    if text:
+        return {"reply": text, "mode": mode, "sources": sources, "citations": sources}
+
+    return {
+        "reply": "Tôi có thể hỗ trợ thông tin về dịch vụ, lịch hẹn và chăm sóc tóc. Bạn hãy cho tôi biết nhu cầu cụ thể hơn.",
+        "mode": "rule_fallback",
+        "sources": [],
+        "citations": [],
+    }
+
+============================================================
+FILE: requirements.txt
+============================================================
+
+Flask>=3.0,<4.0
+Werkzeug>=3.0,<4.0
+python-dotenv>=1.0,<2.0
+google-genai>=1.0
+ddgs>=9.0
+openpyxl>=3.1,<4.0
+reportlab>=4.0,<5.0
+pytest>=8.0,<9.0
+
+============================================================
+FILE: .env.example
+============================================================
+
+SECRET_KEY=change-this-secret
+FLASK_DEBUG=0
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.6-flash
+GEMINI_WEB_MODEL=gemini-3.6-flash
+
+============================================================
+FILE: README.md
+============================================================
+
+# Hệ thống quản lý đặt lịch salon tóc có tích hợp AI
+
+## Công nghệ
+- Flask + Jinja2
+- SQLite
+- Google Gemini (tùy chọn)
+- Google Search grounding qua Gemini khi có quota/API
+- DDGS web-search fallback khi Gemini không khả dụng
+- HTML/CSS/JavaScript
+
+## Chạy
+```powershell
+py -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env
+.venv\Scripts\python.exe app.py
+```
+Mở `http://127.0.0.1:5000`
+
+## Demo
+- Admin: `admin / 123456`
+- Lễ tân: `le_tan / 123456`
+- Thợ: `tho01 / 123456`
+
+## AI
+1. Gợi ý dịch vụ dựa trên nhu cầu, lịch sử khách và danh sách dịch vụ.
+2. Sinh tin nhắn chăm sóc khách hàng.
+3. Tóm tắt lịch sử khách hàng.
+4. Chatbot salon; câu hỏi về pháp luật/thông tin cập nhật có thể dùng Google Search qua Gemini. Nếu Gemini không khả dụng hoặc hết quota, hệ thống dùng DDGS để tìm kiếm web và trả nguồn.
+
+## Bảo mật
+- Mật khẩu lưu hash.
+- API key chỉ đặt trong `.env`, không commit.
+- AI chỉ được phép đề xuất dịch vụ tồn tại trong danh mục được cấp.
+
+============================================================
+FILE: static/css/style.css
+============================================================
+
+body{background:#f5f7fb;color:#1d2a3a}.layout{display:flex;min-height:100vh}.sidebar{width:235px;background:#101827;color:#fff;padding:22px 16px;position:fixed;top:0;bottom:0}.sidebar .brand{font-size:24px;font-weight:800;margin-bottom:25px}.sidebar .brand span{color:#8b5cf6}.sidebar a{display:block;color:#cbd5e1;text-decoration:none;padding:10px 12px;border-radius:10px;margin-bottom:4px}.sidebar a:hover{background:#1f2937;color:#fff}.sidebar hr{border-color:#334155}.main{margin-left:235px;width:calc(100% - 235px)}.topbar{height:64px;background:#fff;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center;padding:0 28px}.stat{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:20px}.stat span{display:block;color:#64748b}.stat strong{display:block;font-size:30px;margin-top:5px}.card{border:0;border-radius:16px;box-shadow:0 6px 24px rgba(15,23,42,.06)}.login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#111827,#7c3aed)}.login-card{background:#fff;padding:34px;border-radius:20px;width:min(420px,92vw);box-shadow:0 20px 60px rgba(0,0,0,.25)}.chat-card{max-width:850px;background:#fff;border-radius:18px;padding:18px}.messages{height:480px;overflow:auto;padding:10px}.bubble{max-width:85%;padding:12px 16px;border-radius:16px;margin:10px 0;white-space:pre-wrap}.bubble.bot{background:#eef2ff}.bubble.user{background:#7c3aed;color:#fff;margin-left:auto}.chat-input{display:flex;gap:10px}.ai-result{background:#0f172a;color:#e2e8f0;padding:18px;border-radius:12px;min-height:120px;white-space:pre-wrap}.table{vertical-align:middle}
+
+============================================================
+FILE: static/js/main.js
+============================================================
+
+document.addEventListener('DOMContentLoaded',()=>{});
+
+============================================================
+FILE: templates/base.html
+============================================================
+
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Salon AI</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">SALON<span>AI</span></div>
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('customers') }}">Khách hàng</a>
+    {% if is_admin or is_receptionist %}<a href="{{ url_for('barbers') }}">Thợ</a>{% endif %}
+    <a href="{{ url_for('services') }}">Dịch vụ</a>
+    <a href="{{ url_for('appointments') }}">Lịch hẹn</a>
+    {% if is_admin or is_receptionist %}<a href="{{ url_for('invoices') }}">Hóa đơn</a>{% endif %}
+    <a href="{{ url_for('history') }}">Lịch sử</a>
+    <hr>
+    <a href="{{ url_for('ai_recommendation_page') }}">AI gợi ý dịch vụ</a>
+    <a href="{{ url_for('ai_message_page') }}">AI tin nhắn</a>
+    <a href="{{ url_for('ai_summary_page') }}">AI tóm tắt</a>
+    <a href="{{ url_for('chat_page') }}">Chatbot AI</a>
+    <hr>
+    <a href="{{ url_for('logout') }}">Đăng xuất</a>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div><strong>Hệ thống quản lý salon tóc có tích hợp AI</strong></div><div>{{ current_user.full_name if current_user else '' }}</div></header>
+    <div class="container-fluid py-4">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}<div class="alert alert-{{ category }}">{{ message }}</div>{% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
+
+============================================================
+FILE: templates/login.html
+============================================================
+
+<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Đăng nhập</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"></head><body class="login-page"><form class="login-card" method="post"><h1>Salon AI</h1><p>Đăng nhập hệ thống</p>{% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}<input class="form-control mb-3" name="username" placeholder="Tên đăng nhập" required><input class="form-control mb-3" type="password" name="password" placeholder="Mật khẩu" required><button class="btn btn-primary w-100">Đăng nhập</button><small class="text-muted d-block mt-3">Demo: admin / 123456</small></form></body></html>
+
+============================================================
+FILE: templates/dashboard.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}
+<h2>Dashboard</h2><p class="text-muted">Theo dõi khách hàng, lịch hẹn và doanh thu salon.</p>
+<div class="row g-3 mb-4"><div class="col-md-3"><div class="stat"><span>Khách hàng</span><strong>{{ stats.customers }}</strong></div></div><div class="col-md-3"><div class="stat"><span>Lịch hôm nay</span><strong>{{ stats.appointments_today }}</strong></div></div><div class="col-md-3"><div class="stat"><span>Lịch chờ</span><strong>{{ stats.pending }}</strong></div></div><div class="col-md-3"><div class="stat"><span>Doanh thu tháng</span><strong>{{ '%.0f'|format(stats.revenue_month) }} đ</strong></div></div></div>
+<div class="row g-4"><div class="col-lg-7"><div class="card p-3"><h5>Lịch hẹn hôm nay</h5><table class="table"><thead><tr><th>Giờ</th><th>Khách</th><th>Thợ</th><th>Trạng thái</th></tr></thead><tbody>{% for a in today_appointments %}<tr><td>{{ a.start_time }}</td><td>{{ a.customer_name }}</td><td>{{ a.barber_name }}</td><td>{{ a.status }}</td></tr>{% else %}<tr><td colspan="4">Chưa có lịch.</td></tr>{% endfor %}</tbody></table></div></div><div class="col-lg-5"><div class="card p-3"><h5>Dịch vụ phổ biến</h5>{% for x in popular %}<div class="d-flex justify-content-between py-2 border-bottom"><span>{{ x.name }}</span><strong>{{ x.count }}</strong></div>{% else %}<p>Chưa có dữ liệu.</p>{% endfor %}</div></div></div>{% endblock %}
+
+============================================================
+FILE: templates/customers.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<div class="d-flex justify-content-between align-items-center"><div><h2>Khách hàng</h2><p class="text-muted">Quản lý hồ sơ và lịch sử khách hàng.</p></div></div><form class="card p-3 mb-4" method="post"><div class="row g-2"><div class="col-md-3"><input name="full_name" class="form-control" placeholder="Họ tên" required></div><div class="col-md-2"><input name="phone" class="form-control" placeholder="Số điện thoại" required></div><div class="col-md-2"><input name="email" class="form-control" placeholder="Email"></div><div class="col-md-2"><input name="gender" class="form-control" placeholder="Giới tính"></div><div class="col-md-3"><input name="note" class="form-control" placeholder="Ghi chú"></div></div><button class="btn btn-primary mt-2">Thêm khách hàng</button></form><form class="mb-3"><input class="form-control" name="q" value="{{ query }}" placeholder="Tìm tên, số điện thoại, email..."></form><div class="card p-3"><table class="table table-hover"><thead><tr><th>#</th><th>Khách hàng</th><th>SĐT</th><th>Email</th><th></th></tr></thead><tbody>{% for c in customers %}<tr><td>{{ c.id }}</td><td>{{ c.full_name }}</td><td>{{ c.phone }}</td><td>{{ c.email or '' }}</td><td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('customer_detail', customer_id=c.id) }}">Chi tiết</a></td></tr>{% endfor %}</tbody></table></div>{% endblock %}
+
+============================================================
+FILE: templates/customer_detail.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>{{ customer.full_name }}</h2><div class="row g-4"><div class="col-lg-5"><div class="card p-3"><h5>Thông tin khách hàng</h5><form method="post" action="{{ url_for('edit_customer', customer_id=customer.id) }}"><input name="full_name" class="form-control mb-2" value="{{ customer.full_name }}"><input name="phone" class="form-control mb-2" value="{{ customer.phone }}"><input name="email" class="form-control mb-2" value="{{ customer.email or '' }}"><input name="gender" class="form-control mb-2" value="{{ customer.gender or '' }}"><input name="birthday" class="form-control mb-2" value="{{ customer.birthday or '' }}"><textarea name="note" class="form-control mb-2">{{ customer.note or '' }}</textarea><button class="btn btn-primary">Lưu</button></form></div></div><div class="col-lg-7"><div class="card p-3"><h5>Lịch sử dịch vụ</h5><table class="table"><tr><th>Ngày</th><th>Dịch vụ</th><th>Kết quả</th></tr>{% for h in history %}<tr><td>{{ h.appointment_date or h.created_at }}</td><td>{{ h.service_name or '' }}</td><td>{{ h.result or '' }}</td></tr>{% else %}<tr><td colspan="3">Chưa có lịch sử.</td></tr>{% endfor %}</table></div></div></div>{% endblock %}
+
+============================================================
+FILE: templates/barbers.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>Thợ</h2>{% if is_admin %}<form class="card p-3 mb-4" method="post"><div class="row g-2"><div class="col-md-3"><input name="full_name" class="form-control" placeholder="Họ tên" required></div><div class="col-md-2"><input name="phone" class="form-control" placeholder="SĐT"></div><div class="col-md-3"><input name="specialty" class="form-control" placeholder="Chuyên môn"></div><div class="col-md-2"><input name="experience" class="form-control" placeholder="Kinh nghiệm"></div><div class="col-md-2"><button class="btn btn-primary w-100">Thêm</button></div></div></form>{% endif %}<div class="card p-3"><table class="table"><thead><tr><th>Họ tên</th><th>Chuyên môn</th><th>Kinh nghiệm</th><th>Trạng thái</th></tr></thead><tbody>{% for b in barbers %}<tr><td>{{ b.full_name }}</td><td>{{ b.specialty }}</td><td>{{ b.experience }}</td><td>{{ b.status }}</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
+
+============================================================
+FILE: templates/services.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>Dịch vụ</h2><form class="card p-3 mb-4" method="post"><div class="row g-2"><div class="col-md-3"><input name="name" class="form-control" placeholder="Tên dịch vụ" required></div><div class="col-md-2"><input name="category" class="form-control" placeholder="Nhóm"></div><div class="col-md-3"><input name="description" class="form-control" placeholder="Mô tả"></div><div class="col-md-2"><input name="duration_minutes" class="form-control" type="number" placeholder="Phút" value="30"></div><div class="col-md-2"><input name="price" class="form-control" type="number" step="1000" placeholder="Giá"></div></div><button class="btn btn-primary mt-2">Thêm dịch vụ</button></form><div class="card p-3"><table class="table"><thead><tr><th>Dịch vụ</th><th>Nhóm</th><th>Thời lượng</th><th>Giá</th></tr></thead><tbody>{% for s in services %}<tr><td>{{ s.name }}</td><td>{{ s.category }}</td><td>{{ s.duration_minutes }} phút</td><td>{{ '%.0f'|format(s.price) }} đ</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
+
+============================================================
+FILE: templates/appointments.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>Lịch hẹn</h2>{% if is_admin or is_receptionist %}<form class="card p-3 mb-4" method="post" action="{{ url_for('create_appointment') }}"><div class="row g-2"><div class="col-md-3"><select name="customer_id" class="form-select" required><option value="">Khách hàng</option>{% for c in customers %}<option value="{{ c.id }}">{{ c.full_name }}</option>{% endfor %}</select></div><div class="col-md-2"><select name="barber_id" class="form-select" required>{% for b in barbers %}<option value="{{ b.id }}">{{ b.full_name }}</option>{% endfor %}</select></div><div class="col-md-2"><input name="appointment_date" type="date" class="form-control" required></div><div class="col-md-1"><input name="start_time" type="time" class="form-control" required></div><div class="col-md-1"><input name="end_time" type="time" class="form-control"></div><div class="col-md-3"><select name="service_ids" multiple class="form-select">{% for s in services %}<option value="{{ s.id }}">{{ s.name }} — {{ '%.0f'|format(s.price) }}đ</option>{% endfor %}</select></div></div><textarea name="note" class="form-control mt-2" placeholder="Ghi chú"></textarea><button class="btn btn-primary mt-2">Đặt lịch</button></form>{% endif %}<div class="card p-3"><table class="table table-hover"><thead><tr><th>Ngày</th><th>Giờ</th><th>Khách</th><th>Thợ</th><th>Tiền</th><th>Trạng thái</th><th></th></tr></thead><tbody>{% for a in appointments %}<tr><td>{{ a.appointment_date }}</td><td>{{ a.start_time }}{% if a.end_time %} - {{ a.end_time }}{% endif %}</td><td>{{ a.customer_name }}</td><td>{{ a.barber_name }}</td><td>{{ '%.0f'|format(a.amount) }}đ</td><td>{{ a.status }}</td><td>{% if is_admin or is_receptionist or is_barber %}<form method="post" action="{{ url_for('update_appointment_status', appointment_id=a.id) }}"><select name="status" onchange="this.form.submit()" class="form-select form-select-sm"><option>{{ a.status }}</option><option>Pending</option><option>Confirmed</option><option>Completed</option><option>Cancelled</option></select></form>{% endif %}</td></tr>{% else %}<tr><td colspan="7">Chưa có lịch.</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
+
+============================================================
+FILE: templates/invoices.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>Hóa đơn</h2><div class="card p-3 mb-4"><form method="post" action="{{ url_for('create_invoice') }}" class="row g-2"><input name="appointment_id" class="form-control" placeholder="ID lịch hẹn"><input name="discount" class="form-control" placeholder="Giảm giá"><select name="payment_method" class="form-select"><option>Cash</option><option>Banking</option><option>Card</option></select><button class="btn btn-primary">Tạo hóa đơn</button></form></div><div class="card p-3"><table class="table"><tr><th>Mã</th><th>Khách</th><th>Tạm tính</th><th>Giảm</th><th>Tổng</th><th>Thanh toán</th></tr>{% for i in invoices %}<tr><td>#{{ i.id }}</td><td>{{ i.customer_name }}</td><td>{{ '%.0f'|format(i.subtotal) }}đ</td><td>{{ '%.0f'|format(i.discount) }}đ</td><td>{{ '%.0f'|format(i.total) }}đ</td><td>{{ i.payment_method }}</td></tr>{% endfor %}</table></div>{% endblock %}
+
+============================================================
+FILE: templates/history.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>Lịch sử khách hàng</h2><form class="mb-3"><input class="form-control" name="q" value="{{ query }}" placeholder="Tìm khách hoặc dịch vụ..."></form><div class="card p-3"><table class="table"><tr><th>Khách</th><th>Dịch vụ</th><th>Kiểu tóc</th><th>Màu tóc</th><th>Kết quả</th></tr>{% for r in rows %}<tr><td>{{ r.customer_name }}</td><td>{{ r.service_name or '' }}</td><td>{{ r.hair_style or '' }}</td><td>{{ r.hair_color or '' }}</td><td>{{ r.result or '' }}</td></tr>{% endfor %}</table></div>{% endblock %}
+
+============================================================
+FILE: templates/ai_recommendation.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>AI gợi ý dịch vụ</h2><div class="card p-3"><select id="customerId" class="form-select mb-3">{% for c in customers %}<option value="{{ c.id }}">{{ c.full_name }}</option>{% endfor %}</select><button class="btn btn-primary" onclick="recommend()">Sinh gợi ý</button><pre id="result" class="ai-result mt-3"></pre></div>{% endblock %}{% block scripts %}<script>async function recommend(){const id=document.getElementById('customerId').value;const r=await fetch('/api/ai/recommend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customer_id:id})});document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2)}</script>{% endblock %}
+
+============================================================
+FILE: templates/ai_message.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>AI sinh tin nhắn chăm sóc</h2><div class="card p-3"><select id="customerId" class="form-select mb-3">{% for c in customers %}<option value="{{ c.id }}">{{ c.full_name }}</option>{% endfor %}</select><button class="btn btn-primary" onclick="makeMessage()">Sinh tin nhắn</button><pre id="result" class="ai-result mt-3"></pre></div>{% endblock %}{% block scripts %}<script>async function makeMessage(){const id=document.getElementById('customerId').value;const r=await fetch('/api/ai/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customer_id:id})});const d=await r.json();document.getElementById('result').textContent=d.reply||JSON.stringify(d,null,2)}</script>{% endblock %}
+
+============================================================
+FILE: templates/ai_summary.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>AI tóm tắt lịch sử khách hàng</h2><div class="card p-3"><select id="customerId" class="form-select mb-3">{% for c in customers %}<option value="{{ c.id }}">{{ c.full_name }}</option>{% endfor %}</select><button class="btn btn-primary" onclick="makeSummary()">Tóm tắt</button><pre id="result" class="ai-result mt-3"></pre></div>{% endblock %}{% block scripts %}<script>async function makeSummary(){const id=document.getElementById('customerId').value;const r=await fetch('/api/ai/summary',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customer_id:id})});const d=await r.json();document.getElementById('result').textContent=d.summary||JSON.stringify(d,null,2)}</script>{% endblock %}
+
+============================================================
+FILE: templates/chat.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<h2>Chatbot Salon AI</h2><div class="chat-card"><div id="messages" class="messages"><div class="bubble bot">Xin chào! Bạn có thể hỏi về dịch vụ salon, lịch hẹn hoặc các thông tin pháp luật/cập nhật cần tra cứu Internet.</div></div><div class="chat-input"><input id="message" class="form-control" placeholder="Nhập câu hỏi..."><button class="btn btn-primary" onclick="sendMessage()">Gửi</button></div></div>{% endblock %}{% block scripts %}<script>async function sendMessage(){const input=document.getElementById('message');const msg=input.value.trim();if(!msg)return;const box=document.getElementById('messages');box.innerHTML+=`<div class="bubble user">${msg}</div>`;input.value='';const r=await fetch('/api/ai/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});const d=await r.json();let extra='';if(d.citations?.length) extra='<br><small>Nguồn: '+d.citations.map(x=>`<a href="${x.url}" target="_blank">${x.title}</a>`).join(' | ')+'</small>';box.innerHTML+=`<div class="bubble bot">${d.reply||d.error}${extra}</div>`;box.scrollTop=box.scrollHeight}</script>{% endblock %}
+
+============================================================
+FILE: templates/error.html
+============================================================
+
+{% extends 'base.html' %}{% block content %}<div class="card p-5 text-center"><h1>{{ code }}</h1><p>{{ message }}</p><a href="{{ url_for('dashboard') }}" class="btn btn-primary">Về Dashboard</a></div>{% endblock %}
+
+============================================================
+FILE: data/services/haircut.txt
+============================================================
+
+Cắt tóc: cắt cơ bản, layer, tạo kiểu theo khuôn mặt.
+Lưu ý: nên tư vấn trực tiếp theo chất tóc và hình dáng khuôn mặt.
+
+============================================================
+FILE: data/services/hair_color.txt
+============================================================
+
+Nhuộm tóc: các màu thời trang và màu cơ bản theo danh mục dịch vụ của salon.
+Lưu ý: tóc yếu hoặc đã xử lý hóa chất nên được kiểm tra trước.
+
+============================================================
+FILE: data/services/hair_care.txt
+============================================================
+
+Gội dưỡng tóc: làm sạch và dưỡng tóc cơ bản.
+Có thể kết hợp chăm sóc tại nhà theo tư vấn của thợ.
+
+============================================================
+FILE: data/services/hair_treatment.txt
+============================================================
+
+Phục hồi tóc: dịch vụ chăm sóc tóc hư tổn.
+Hiệu quả phụ thuộc tình trạng tóc thực tế và quy trình thực hiện.
+
+============================================================
+FILE: tests/test_smoke.py
+============================================================
+
+from app import app
+
+
+def test_home_redirects_to_login():
+    client = app.test_client()
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code in (302, 303)
+
+
+def test_login_page():
+    client = app.test_client()
+    response = client.get("/login")
+    assert response.status_code == 200

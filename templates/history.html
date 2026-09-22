@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Lịch sử khách hàng</h2>
+
+<form class="mb-3">
+  <input class="form-control" name="q" value="{{ query }}" placeholder="Tìm khách hoặc dịch vụ...">
+</form>
+
+<div class="card p-3">
+  <table class="table">
+    <tr>
+      <th>Khách</th>
+      <th>Dịch vụ</th>
+      <th>Kiểu tóc</th>
+      <th>Màu tóc</th>
+      <th>Kết quả</th>
+    </tr>
+    {% for r in rows %}
+      <tr>
+        <td>{{ r.customer_name }}</td>
+        <td>{{ r.service_name or '' }}</td>
+        <td>{{ r.hair_style or '' }}</td>
+        <td>{{ r.hair_color or '' }}</td>
+        <td>{{ r.result or '' }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

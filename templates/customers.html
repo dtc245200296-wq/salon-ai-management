@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center">
+  <div>
+    <h2>Khách hàng</h2>
+    <p class="text-muted">Quản lý hồ sơ và lịch sử khách hàng.</p>
+  </div>
+</div>
+
+<form class="card p-3 mb-4" method="post">
+  <div class="row g-2">
+    <div class="col-md-3">
+      <input name="full_name" class="form-control" placeholder="Họ tên" required>
+    </div>
+    <div class="col-md-2">
+      <input name="phone" class="form-control" placeholder="Số điện thoại" required>
+    </div>
+    <div class="col-md-2">
+      <input name="email" class="form-control" placeholder="Email">
+    </div>
+    <div class="col-md-2">
+      <input name="gender" class="form-control" placeholder="Giới tính">
+    </div>
+    <div class="col-md-3">
+      <input name="note" class="form-control" placeholder="Ghi chú">
+    </div>
+  </div>
+  <button class="btn btn-primary mt-2">Thêm khách hàng</button>
+</form>
+
+<form class="mb-3">
+  <input class="form-control" name="q" value="{{ query }}" placeholder="Tìm tên, số điện thoại, email...">
+</form>
+
+<div class="card p-3">
+  <table class="table table-hover">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Khách hàng</th>
+        <th>SĐT</th>
+        <th>Email</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in customers %}
+        <tr>
+          <td>{{ c.id }}</td>
+          <td>{{ c.full_name }}</td>
+          <td>{{ c.phone }}</td>
+          <td>{{ c.email or '' }}</td>
+          <td>
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('customer_detail', customer_id=c.id) }}">Chi tiết</a>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

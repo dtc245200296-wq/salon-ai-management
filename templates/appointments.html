@@ -1,0 +1,90 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Lịch hẹn</h2>
+
+{% if is_admin or is_receptionist %}
+  <form class="card p-3 mb-4" method="post" action="{{ url_for('create_appointment') }}">
+    <div class="row g-2">
+      <div class="col-md-3">
+        <select name="customer_id" class="form-select" required>
+          <option value="">Khách hàng</option>
+          {% for c in customers %}
+            <option value="{{ c.id }}">{{ c.full_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <select name="barber_id" class="form-select" required>
+          {% for b in barbers %}
+            <option value="{{ b.id }}">{{ b.full_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <input name="appointment_date" type="date" class="form-control" required>
+      </div>
+      <div class="col-md-1">
+        <input name="start_time" type="time" class="form-control" required>
+      </div>
+      <div class="col-md-1">
+        <input name="end_time" type="time" class="form-control">
+      </div>
+      <div class="col-md-3">
+        <select name="service_ids" multiple class="form-select">
+          {% for s in services %}
+            <option value="{{ s.id }}">{{ s.name }} — {{ '%.0f'|format(s.price) }}đ</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <textarea name="note" class="form-control mt-2" placeholder="Ghi chú"></textarea>
+    <button class="btn btn-primary mt-2">Đặt lịch</button>
+  </form>
+{% endif %}
+
+<div class="card p-3">
+  <table class="table table-hover">
+    <thead>
+      <tr>
+        <th>Ngày</th>
+        <th>Giờ</th>
+        <th>Khách</th>
+        <th>Thợ</th>
+        <th>Tiền</th>
+        <th>Trạng thái</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in appointments %}
+        <tr>
+          <td>{{ a.appointment_date }}</td>
+          <td>{{ a.start_time }}{% if a.end_time %} - {{ a.end_time }}{% endif %}</td>
+          <td>{{ a.customer_name }}</td>
+          <td>{{ a.barber_name }}</td>
+          <td>{{ '%.0f'|format(a.amount) }}đ</td>
+          <td>{{ a.status }}</td>
+          <td>
+            {% if is_admin or is_receptionist or is_barber %}
+              <form method="post" action="{{ url_for('update_appointment_status', appointment_id=a.id) }}">
+                <select name="status" onchange="this.form.submit()" class="form-select form-select-sm">
+                  <option>{{ a.status }}</option>
+                  <option>Pending</option>
+                  <option>Confirmed</option>
+                  <option>Completed</option>
+                  <option>Cancelled</option>
+                </select>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="7">Chưa có lịch.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

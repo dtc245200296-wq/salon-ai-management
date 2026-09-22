@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>{{ customer.full_name }}</h2>
+
+<div class="row g-4">
+  <div class="col-lg-5">
+    <div class="card p-3">
+      <h5>Thông tin khách hàng</h5>
+      <form method="post" action="{{ url_for('edit_customer', customer_id=customer.id) }}">
+        <input name="full_name" class="form-control mb-2" value="{{ customer.full_name }}">
+        <input name="phone" class="form-control mb-2" value="{{ customer.phone }}">
+        <input name="email" class="form-control mb-2" value="{{ customer.email or '' }}">
+        <input name="gender" class="form-control mb-2" value="{{ customer.gender or '' }}">
+        <input name="birthday" class="form-control mb-2" value="{{ customer.birthday or '' }}">
+        <textarea name="note" class="form-control mb-2">{{ customer.note or '' }}</textarea>
+        <button class="btn btn-primary">Lưu</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card p-3">
+      <h5>Lịch sử dịch vụ</h5>
+      <table class="table">
+        <tr>
+          <th>Ngày</th>
+          <th>Dịch vụ</th>
+          <th>Kết quả</th>
+        </tr>
+        {% for h in history %}
+          <tr>
+            <td>{{ h.appointment_date or h.created_at }}</td>
+            <td>{{ h.service_name or '' }}</td>
+            <td>{{ h.result or '' }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="3">Chưa có lịch sử.</td>
+          </tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

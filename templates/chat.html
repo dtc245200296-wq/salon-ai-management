@@ -1,0 +1,81 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Chatbot Salon AI</h2>
+<div class="chat-card">
+  <div id="messages" class="messages">
+    <div class="bubble bot">Xin chào! Tôi là Chuyên gia AI của Salon. Bạn có thể hỏi bất kỳ câu hỏi nào về kỹ thuật làm tóc, màu nhuộm, tư vấn kiểu dáng hoặc dịch vụ salon!</div>
+  </div>
+  <div class="chat-input">
+    <!-- Bổ sung sự kiện onkeydown để bắt phím Enter -->
+    <input id="message" class="form-control" placeholder="Nhập câu hỏi..." onkeydown="handleKeyPress(event)">
+    <button class="btn btn-primary" onclick="sendMessage()">Gửi</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Bắt sự kiện phím Enter
+  function handleKeyPress(event) {
+    if (event.key === 'Enter') {
+      event.preventDefault(); // Tránh reload trang
+      sendMessage();
+    }
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById('message');
+    const msg = input.value.trim();
+    if (!msg) return;
+
+    const box = document.getElementById('messages');
+    
+    // Hiển thị tin nhắn người dùng
+    box.innerHTML += `<div class="bubble user">${msg}</div>`;
+    input.value = '';
+    box.scrollTop = box.scrollHeight;
+
+    // Hiển thị bóng tin nhắn chờ AI phản hồi
+    const loadingId = 'loading-' + Date.now();
+    box.innerHTML += `<div id="${loadingId}" class="bubble bot"><i>Salon AI đang suy nghĩ...</i></div>`;
+    box.scrollTop = box.scrollHeight;
+
+    try {
+      const r = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ message: msg })
+      });
+
+      const d = await r.json();
+      
+      // Xóa dòng chữ đang suy nghĩ
+      const loadingEl = document.getElementById(loadingId);
+      if (loadingEl) loadingEl.remove();
+
+      let replyText = d.reply || d.error || 'Đã có lỗi xảy ra.';
+
+      // Định dạng xuống dòng và in đậm Markdown để giao diện hiển thị đẹp
+      replyText = replyText
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n/g, '<br>');
+
+      let extra = '';
+      if (d.citations?.length) {
+        extra = '<br><small>Nguồn: ' + d.citations.map(x => `<a href="${x.url}" target="_blank">${x.title}</a>`).join(' | ') + '</small>';
+      }
+
+      box.innerHTML += `<div class="bubble bot">${replyText}${extra}</div>`;
+    } catch (err) {
+      const loadingEl = document.getElementById(loadingId);
+      if (loadingEl) loadingEl.remove();
+      box.innerHTML += `<div class="bubble bot">Không thể kết nối đến máy chủ. Vui lòng thử lại!</div>`;
+    }
+
+    box.scrollTop = box.scrollHeight;
+  }
+</script>
+{% endblock %}

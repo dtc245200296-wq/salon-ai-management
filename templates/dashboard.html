@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Dashboard</h2>
+<p class="text-muted">Theo dõi khách hàng, lịch hẹn và doanh thu salon.</p>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="stat">
+      <span>Khách hàng</span>
+      <strong>{{ stats.customers }}</strong>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="stat">
+      <span>Lịch hôm nay</span>
+      <strong>{{ stats.appointments_today }}</strong>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="stat">
+      <span>Lịch chờ</span>
+      <strong>{{ stats.pending }}</strong>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="stat">
+      <span>Doanh thu tháng</span>
+      <strong>{{ '%.0f'|format(stats.revenue_month) }} đ</strong>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card p-3">
+      <h5>Lịch hẹn hôm nay</h5>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Giờ</th>
+            <th>Khách</th>
+            <th>Thợ</th>
+            <th>Trạng thái</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in today_appointments %}
+            <tr>
+              <td>{{ a.start_time }}</td>
+              <td>{{ a.customer_name }}</td>
+              <td>{{ a.barber_name }}</td>
+              <td>{{ a.status }}</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="4">Chưa có lịch.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card p-3">
+      <h5>Dịch vụ phổ biến</h5>
+      {% for x in popular %}
+        <div class="d-flex justify-content-between py-2 border-bottom">
+          <span>{{ x.name }}</span>
+          <strong>{{ x.count }}</strong>
+        </div>
+      {% else %}
+        <p>Chưa có dữ liệu.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

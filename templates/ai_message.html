@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>AI sinh tin nhắn chăm sóc</h2>
+<div class="card p-3">
+  <select id="customerId" class="form-select mb-3">
+    {% for c in customers %}
+      <option value="{{ c.id }}">{{ c.full_name }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-primary" onclick="makeMessage()">Sinh tin nhắn</button>
+  <pre id="result" class="ai-result mt-3"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function makeMessage() {
+    const id = document.getElementById('customerId').value;
+    const r = await fetch('/api/ai/message', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ customer_id: id })
+    });
+    const d = await r.json();
+    document.getElementById('result').textContent = d.reply || JSON.stringify(d, null, 2);
+  }
+</script>
+{% endblock %}

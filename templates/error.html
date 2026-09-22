@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="card p-5 text-center">
+  <h1>{{ code }}</h1>
+  <p>{{ message }}</p>
+  <a href="{{ url_for('dashboard') }}" class="btn btn-primary">Về Dashboard</a>
+</div>
+{% endblock %}

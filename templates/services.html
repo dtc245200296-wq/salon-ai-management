@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Dịch vụ</h2>
+
+<form class="card p-3 mb-4" method="post">
+  <div class="row g-2">
+    <div class="col-md-3">
+      <input name="name" class="form-control" placeholder="Tên dịch vụ" required>
+    </div>
+    <div class="col-md-2">
+      <input name="category" class="form-control" placeholder="Nhóm">
+    </div>
+    <div class="col-md-3">
+      <input name="description" class="form-control" placeholder="Mô tả">
+    </div>
+    <div class="col-md-2">
+      <input name="duration_minutes" class="form-control" type="number" placeholder="Phút" value="30">
+    </div>
+    <div class="col-md-2">
+      <input name="price" class="form-control" type="number" step="1000" placeholder="Giá">
+    </div>
+  </div>
+  <button class="btn btn-primary mt-2">Thêm dịch vụ</button>
+</form>
+
+<div class="card p-3">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Dịch vụ</th>
+        <th>Nhóm</th>
+        <th>Thời lượng</th>
+        <th>Giá</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in services %}
+        <tr>
+          <td>{{ s.name }}</td>
+          <td>{{ s.category }}</td>
+          <td>{{ s.duration_minutes }} phút</td>
+          <td>{{ '%.0f'|format(s.price) }} đ</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

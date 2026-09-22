@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h2>Thợ</h2>
+
+{% if is_admin %}
+  <form class="card p-3 mb-4" method="post">
+    <div class="row g-2">
+      <div class="col-md-3">
+        <input name="full_name" class="form-control" placeholder="Họ tên" required>
+      </div>
+      <div class="col-md-2">
+        <input name="phone" class="form-control" placeholder="SĐT">
+      </div>
+      <div class="col-md-3">
+        <input name="specialty" class="form-control" placeholder="Chuyên môn">
+      </div>
+      <div class="col-md-2">
+        <input name="experience" class="form-control" placeholder="Kinh nghiệm">
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary w-100">Thêm</button>
+      </div>
+    </div>
+  </form>
+{% endif %}
+
+<div class="card p-3">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Họ tên</th>
+        <th>Chuyên môn</th>
+        <th>Kinh nghiệm</th>
+        <th>Trạng thái</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in barbers %}
+        <tr>
+          <td>{{ b.full_name }}</td>
+          <td>{{ b.specialty }}</td>
+          <td>{{ b.experience }}</td>
+          <td>{{ b.status }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
